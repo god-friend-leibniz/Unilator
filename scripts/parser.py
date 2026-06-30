@@ -36,6 +36,10 @@ def clean_html(raw_html, keyword):
     html = re.sub(r'(<ex[^>]*>)', r'\n\1', html, flags=re.IGNORECASE)
     html = re.sub(r'(</ex>)', r'\1\n', html, flags=re.IGNORECASE)
     
+    # ФИКС ССЫЛОК: принудительно выносим словарные гиперссылки на новые строки
+    html = re.sub(r'(<a[^>]*href=["\']?(?:bword://|entry://|x-dictionary:)[^>]*>)', r'\n\1', html, flags=re.IGNORECASE)
+    html = re.sub(r'(</a>)', r'\1\n', html, flags=re.IGNORECASE)
+    
     html = re.sub(fr'(<[^>]*{ex_pat}[^>]*>)', r'\n\1', html, flags=re.IGNORECASE)
     html = re.sub(fr'(<[^>]*{gr_pat}[^>]*>)', r'\n\1', html, flags=re.IGNORECASE)
     
@@ -51,11 +55,22 @@ def clean_html(raw_html, keyword):
         if not line: continue
             
         tag_type = "def" 
+        ref_target = None
         
         # Проверка на заголовки
         if re.search(r'<k[^>]*>', line, re.IGNORECASE) or re.search(r'class=["\']?(?:h|head|title)["\']?', line, re.IGNORECASE):
             tag_type = "h"
             
+        # ПРОКАЧАННАЯ ПРОВЕРКА НА ССЫЛКИ (Cross-references)
+        elif re.search(r'href=["\']?(?:bword://|entry://|x-dictionary:[dr]:)([^"\'>]+)["\']?', line, re.IGNORECASE):
+            ref_match = re.search(r'href=["\']?(?:bword://|entry://|x-dictionary:[dr]:)([^"\'>]+)["\']?', line, re.IGNORECASE)
+            raw_ref = ref_match.group(1).replace('%20', ' ').strip()
+            
+            # Игнорируем мертвые ссылки тезауруса, которые начинаются с & (например, &000_Parenting)
+            if not raw_ref.startswith('&'):
+                tag_type = "link"
+                ref_target = raw_ref
+                
         # ПРОКАЧАННАЯ ПРОВЕРКА НА ПРИМЕРЫ (Теги, Классы, Буллиты или Темно-синий цвет Кембриджа #0B0B61)
         elif re.search(ex_pat, line, re.IGNORECASE) \
              or re.search(r'<ex>', line, re.IGNORECASE) \
@@ -79,7 +94,7 @@ def clean_html(raw_html, keyword):
         inline_tags = r'/?(?:b|i|u|strong|em|font|span|c|a|k)'
         line = re.sub(fr'<{inline_tags}[^>]*>', '', line, flags=re.IGNORECASE)
         
-        # Остальные теги (если вдруг остались какие-то экзотические) меняем на пробел
+        # Остальные теги (если вдруг остались какие-то экзотические) меняем на пробел, чтобы слова не склеивались
         v = re.sub(r'<[^>]+>', ' ', line) 
         
         v = html_lib.unescape(v)
@@ -92,7 +107,11 @@ def clean_html(raw_html, keyword):
             
         if v not in unique_lines:
             unique_lines.add(v)
-            structured_data.append({"t": tag_type, "v": v})
+            # Если это ссылка, добавляем в JSON дополнительное поле "ref"
+            if tag_type == "link" and ref_target:
+                structured_data.append({"t": tag_type, "v": v, "ref": ref_target})
+            else:
+                structured_data.append({"t": tag_type, "v": v})
             
     return json.dumps(structured_data, ensure_ascii=False)
 

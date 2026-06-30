@@ -120,6 +120,9 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
   final ScrollController _scrollController = ScrollController();
   final TranslationService _translationService = TranslationService();
 
+  // Стек истории для кнопки/жеста Назад
+  final List<String> _searchHistory = [];
+
   final List<String> _translationDictKeywords = [
     'muller',
     'mueller',
@@ -210,7 +213,6 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
             File(localDictPath).existsSync()) {
           final engine = DictionaryEngine();
           if (await engine.load(localIdxPath, localDictPath)) {
-            // Определяем, является ли этот словарь русским/переводным по массиву
             final lowerName = baseName.toLowerCase();
             final isTranslationDict = _translationDictKeywords.any(
               (keyword) => lowerName.contains(keyword),
@@ -240,10 +242,18 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
     }
   }
 
-  void _performSearch(String query) {
+  // Обновили метод: теперь можно управлять историей при поиске
+  void _performSearch(String query, {bool isBackNavigation = false}) {
     query = query.trim();
     if (_engines.isEmpty || query.isEmpty) return;
     FocusManager.instance.primaryFocus?.unfocus();
+
+    // Если это новый поиск (не по кнопке назад) - сохраняем текущий в историю
+    if (!isBackNavigation &&
+        _currentQuery.isNotEmpty &&
+        _currentQuery != query) {
+      _searchHistory.add(_currentQuery);
+    }
 
     _isTranslated = false;
     _translatedQueryText = "";
@@ -257,7 +267,6 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
     List<Map<String, dynamic>> translationResults = [];
 
     for (var dict in _engines) {
-      // Выбираем, в какой список попадут результаты этого словаря
       final targetList = dict.isTranslationDict
           ? translationResults
           : englishResults;
@@ -279,12 +288,10 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
           for (var block in blocks) {
             final type = block['t'] as String;
             final text = block['v'] as String;
+            final refTarget = block['ref'] as String?;
 
-            if (text.toLowerCase().contains('.wav') ||
-                text.toLowerCase().contains('.jpg') ||
-                text.trim().isEmpty) {
+            if (text.toLowerCase().contains('.wav') || text.trim().isEmpty)
               continue;
-            }
 
             if (!filterByPhrase) {
               if (!seenTexts.contains('${type}_$text')) {
@@ -293,7 +300,10 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                   targetList.add({"t": "dict_title", "v": dictName});
                   hasTitle = true;
                 }
-                targetList.add({"t": type, "v": text});
+
+                final mapToAdd = {"t": type, "v": text};
+                if (refTarget != null) mapToAdd['ref'] = refTarget;
+                targetList.add(mapToAdd);
               }
             } else {
               if (type == 'h') {
@@ -305,7 +315,9 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                       targetList.add({"t": "dict_title", "v": dictName});
                       hasTitle = true;
                     }
-                    targetList.add({"t": type, "v": text, "highlight": query});
+                    final mapToAdd = {"t": type, "v": text, "highlight": query};
+                    if (refTarget != null) mapToAdd['ref'] = refTarget;
+                    targetList.add(mapToAdd);
                   }
                 }
               } else {
@@ -317,7 +329,9 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                       targetList.add({"t": "dict_title", "v": dictName});
                       hasTitle = true;
                     }
-                    targetList.add({"t": type, "v": text, "highlight": query});
+                    final mapToAdd = {"t": type, "v": text, "highlight": query};
+                    if (refTarget != null) mapToAdd['ref'] = refTarget;
+                    targetList.add(mapToAdd);
                   }
                 }
               }
@@ -492,6 +506,69 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
         padding = const EdgeInsets.only(left: 16.0, bottom: 16.0, top: 8.0);
         break;
 
+      case 'link':
+        final refTarget = block['ref'] as String? ?? text;
+
+        return Padding(
+          padding: const EdgeInsets.only(left: 16.0, bottom: 12.0, top: 4.0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () {
+                  // При клике: меняем текст в поиске и мгновенно запускаем поиск!
+                  _searchController.text = refTarget;
+                  _performSearch(refTarget);
+                },
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? Colors.blueAccent.withValues(alpha: 0.1)
+                        : Colors.blue.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isDark
+                          ? Colors.blueAccent.withValues(alpha: 0.3)
+                          : Colors.blue.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.ads_click,
+                        size: 18,
+                        color: isDark
+                            ? Colors.lightBlueAccent
+                            : Colors.blue[700],
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          'Смотреть: $displayText',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: isDark
+                                ? Colors.lightBlueAccent
+                                : Colors.blue[800],
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
       case 'def':
       default:
         baseStyle = TextStyle(
@@ -554,179 +631,205 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
 
     final blocksToRender = _isTranslated ? _translationBlocks : _englishBlocks;
 
-    return Scaffold(
-      backgroundColor: theme.scaffoldBackgroundColor,
-      appBar: AppBar(
-        title: const Text(
-          'Оффлайн Словари',
-          style: TextStyle(fontWeight: FontWeight.w600),
-        ),
-        centerTitle: true,
+    // Обертка PopScope для управления системным жестом "Назад"
+    return PopScope(
+      canPop: !_hasSearched && _searchHistory.isEmpty,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+
+        if (_searchHistory.isNotEmpty) {
+          // Если есть история, достаем предыдущее слово и ищем его
+          final previousQuery = _searchHistory.removeLast();
+          _searchController.text = previousQuery;
+          _performSearch(previousQuery, isBackNavigation: true);
+        } else if (_hasSearched) {
+          // Если история пуста, но мы на экране поиска - возвращаемся на главный экран
+          setState(() {
+            _hasSearched = false;
+            _searchController.clear();
+            _currentQuery = "";
+            _englishBlocks.clear();
+            _translationBlocks.clear();
+            _isTranslated = false;
+          });
+        }
+      },
+      child: Scaffold(
         backgroundColor: theme.scaffoldBackgroundColor,
-        elevation: 0,
-      ),
-      body: _isInitializing
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Container(
-                  margin: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? const Color(0xFF1E1E1E)
-                        : theme.colorScheme.surfaceContainerHighest.withValues(
-                            alpha: 0.5,
-                          ),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: TextField(
-                    controller: _searchController,
-                    textInputAction: TextInputAction.search,
-                    decoration: InputDecoration(
-                      hintText: 'Введите слово или фразу...',
-                      prefixIcon: Icon(
-                        Icons.search,
-                        color: theme.colorScheme.primary,
-                      ),
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 16,
-                      ),
-                      suffixIcon: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (_isTranslating)
-                            Padding(
-                              padding: const EdgeInsets.only(right: 12.0),
-                              child: SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: theme.colorScheme.primary,
+        appBar: AppBar(
+          title: const Text(
+            'Оффлайн Словари',
+            style: TextStyle(fontWeight: FontWeight.w600),
+          ),
+          centerTitle: true,
+          backgroundColor: theme.scaffoldBackgroundColor,
+          elevation: 0,
+        ),
+        body: _isInitializing
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+                children: [
+                  Container(
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isDark
+                          ? const Color(0xFF1E1E1E)
+                          : theme.colorScheme.surfaceContainerHighest
+                                .withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: TextField(
+                      controller: _searchController,
+                      textInputAction: TextInputAction.search,
+                      decoration: InputDecoration(
+                        hintText: 'Введите слово или фразу...',
+                        prefixIcon: Icon(
+                          Icons.search,
+                          color: theme.colorScheme.primary,
+                        ),
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
+                        ),
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_isTranslating)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 12.0),
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: theme.colorScheme.primary,
+                                  ),
                                 ),
-                              ),
-                            )
-                          else if (_hasSearched) ...[
-                            if (_currentQuery.trim().contains(' '))
+                              )
+                            else if (_hasSearched) ...[
+                              if (_currentQuery.trim().contains(' '))
+                                IconButton(
+                                  icon: Icon(
+                                    Icons.find_in_page,
+                                    color: _isDeepSearchMode
+                                        ? (isDark
+                                              ? Colors.cyanAccent
+                                              : theme.colorScheme.primary)
+                                        : Colors.grey,
+                                  ),
+                                  tooltip: _isDeepSearchMode
+                                      ? 'Выключить глубокий поиск'
+                                      : 'Искать фразу внутри статьи',
+                                  onPressed: () {
+                                    setState(() {
+                                      _isDeepSearchMode = !_isDeepSearchMode;
+                                      _performSearch(_currentQuery);
+                                    });
+                                  },
+                                ),
                               IconButton(
                                 icon: Icon(
-                                  Icons.find_in_page,
-                                  color: _isDeepSearchMode
+                                  Icons.g_translate,
+                                  color: _isTranslated
                                       ? (isDark
                                             ? Colors.cyanAccent
                                             : theme.colorScheme.primary)
                                       : Colors.grey,
                                 ),
-                                tooltip: _isDeepSearchMode
-                                    ? 'Выключить глубокий поиск'
-                                    : 'Искать фразу внутри статьи',
+                                tooltip: _isTranslated
+                                    ? 'Показать оригинал'
+                                    : 'Перевести на русский',
+                                onPressed: _toggleTranslation,
+                              ),
+                            ],
+                            if (_searchController.text.isNotEmpty)
+                              IconButton(
+                                icon: const Icon(Icons.clear),
                                 onPressed: () {
+                                  _searchController.clear();
                                   setState(() {
-                                    _isDeepSearchMode = !_isDeepSearchMode;
-                                    _performSearch(_currentQuery);
+                                    _hasSearched = false;
+                                    _isTranslated = false;
+                                    _translatedQueryText = "";
+                                    _isDeepSearchMode = false;
+                                    _englishBlocks.clear();
+                                    _translationBlocks.clear();
+                                    _currentQuery = "";
                                   });
                                 },
                               ),
-                            IconButton(
-                              icon: Icon(
-                                Icons.g_translate,
-                                color: _isTranslated
-                                    ? (isDark
-                                          ? Colors.cyanAccent
-                                          : theme.colorScheme.primary)
-                                    : Colors.grey,
-                              ),
-                              tooltip: _isTranslated
-                                  ? 'Показать оригинал'
-                                  : 'Перевести на русский',
-                              onPressed: _toggleTranslation,
-                            ),
-                          ],
-                          if (_searchController.text.isNotEmpty)
-                            IconButton(
-                              icon: const Icon(Icons.clear),
-                              onPressed: () {
-                                _searchController.clear();
-                                setState(() {
-                                  _hasSearched = false;
-                                  _isTranslated = false;
-                                  _translatedQueryText = "";
-                                  _isDeepSearchMode = false;
-                                  _englishBlocks.clear();
-                                  _translationBlocks.clear();
-                                });
-                              },
-                            ),
-                        ],
-                      ),
-                    ),
-                    onChanged: (_) => setState(() {}),
-                    onSubmitted: _performSearch,
-                  ),
-                ),
-                Expanded(
-                  child: !_hasSearched
-                      ? _buildWelcomeScreen(theme)
-                      : Column(
-                          children: [
-                            if (_isTranslated)
-                              _buildTranslationCard(theme, isDark),
-
-                            Expanded(
-                              child: blocksToRender.isEmpty
-                                  ? Center(
-                                      child: SingleChildScrollView(
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(
-                                              _isTranslated
-                                                  ? Icons.menu_book_rounded
-                                                  : Icons.search_off,
-                                              size: 64,
-                                              color: theme.colorScheme.onSurface
-                                                  .withValues(alpha: 0.2),
-                                            ),
-                                            const SizedBox(height: 16),
-                                            Text(
-                                              _isTranslated
-                                                  ? 'В оффлайн-словарях перевода нет'
-                                                  : 'Фраза «$_currentQuery» не найдена',
-                                              style: const TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                              textAlign: TextAlign.center,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    )
-                                  : ListView.builder(
-                                      controller: _scrollController,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 16,
-                                        vertical: 8,
-                                      ),
-                                      itemCount: blocksToRender.length,
-                                      itemBuilder: (ctx, i) =>
-                                          _buildBlockWidget(
-                                            blocksToRender[i],
-                                            theme,
-                                            isDark,
-                                          ),
-                                    ),
-                            ),
                           ],
                         ),
-                ),
-              ],
-            ),
+                      ),
+                      onChanged: (_) => setState(() {}),
+                      onSubmitted: _performSearch,
+                    ),
+                  ),
+                  Expanded(
+                    child: !_hasSearched
+                        ? _buildWelcomeScreen(theme)
+                        : Column(
+                            children: [
+                              if (_isTranslated)
+                                _buildTranslationCard(theme, isDark),
+
+                              Expanded(
+                                child: blocksToRender.isEmpty
+                                    ? Center(
+                                        child: SingleChildScrollView(
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                _isTranslated
+                                                    ? Icons.menu_book_rounded
+                                                    : Icons.search_off,
+                                                size: 64,
+                                                color: theme
+                                                    .colorScheme
+                                                    .onSurface
+                                                    .withValues(alpha: 0.2),
+                                              ),
+                                              const SizedBox(height: 16),
+                                              Text(
+                                                _isTranslated
+                                                    ? 'В оффлайн-словарях перевода нет'
+                                                    : 'Фраза «$_currentQuery» не найдена',
+                                                style: const TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                                textAlign: TextAlign.center,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      )
+                                    : ListView.builder(
+                                        controller: _scrollController,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 16,
+                                          vertical: 8,
+                                        ),
+                                        itemCount: blocksToRender.length,
+                                        itemBuilder: (ctx, i) =>
+                                            _buildBlockWidget(
+                                              blocksToRender[i],
+                                              theme,
+                                              isDark,
+                                            ),
+                                      ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ],
+              ),
+      ),
     );
   }
 
