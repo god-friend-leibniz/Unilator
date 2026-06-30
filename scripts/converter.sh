@@ -1,8 +1,6 @@
 #!/bin/bash
 
-# Укажите путь к папке с вашими скачанными словарями
 ASSETS_DIR="/Users/maxwell/itmo/Scheise/offline_dict/assets"
-# Путь к Python-конвертеру
 CONVERTER_SCRIPT="$(pwd)/parser.py"
 
 echo "=== Шаг 1: Подготовка и Распаковка архивов ==="
@@ -11,10 +9,8 @@ cd "$ASSETS_DIR" || {
     exit 1
 }
 
-# Создаем папку clean, если ее нет
 mkdir -p clean
 
-# Распаковываем tar.bz2 и tar.gz
 for archive in *.tar.bz2 *.tar.gz; do
     if [ -f "$archive" ]; then
         echo "📦 Распаковываем архив: $archive"
@@ -22,7 +18,6 @@ for archive in *.tar.bz2 *.tar.gz; do
     fi
 done
 
-# Распаковываем zip архивы
 for archive in *.zip; do
     if [ -f "$archive" ]; then
         echo "📦 Распаковываем архив: $archive"
@@ -32,10 +27,7 @@ done
 
 echo ""
 echo "=== Шаг 2: Вытаскиваем файлы из подпапок ==="
-# Ищем файлы в подпапках (mindepth 2), ИГНОРИРУЯ папку clean (-prune)
 find . -mindepth 2 -name "clean" -prune -o -type f \( -name "*.dict" -o -name "*.idx" -o -name "*.dict.dz" -o -name "*.mdx" \) -exec mv {} . \;
-
-# Удаляем пустые папки (кроме clean)
 find . -mindepth 1 -name "clean" -prune -o -type d -empty -delete
 echo "✨ Файлы перемещены в корень."
 
@@ -48,34 +40,17 @@ if command -v dictunzip &>/dev/null; then
             dictunzip "$dz_file"
         fi
     done
-else
-    echo "⚠️ Утилита dictunzip не установлена. Пропускаем..."
 fi
 
 echo ""
-echo "=== Шаг 4: Конвертация MDX через PyGlossary ==="
-for mdx_file in *.mdx; do
-    if [ -f "$mdx_file" ]; then
-        base="${mdx_file%.mdx}"
-        if [ ! -f "${base}.dict" ]; then
-            echo "🔄 Конвертируем $mdx_file в StarDict формат..."
-            # Pyglossary для формата StarDict требует на выходе указать .ifo файл
-            ipy pyglossary "$mdx_file" "${base}.ifo" --write-format=Stardict
-        else
-            echo "⏭️  $mdx_file уже имеет соответствующий .dict файл, пропускаем."
-        fi
-    fi
-done
-
-echo ""
-echo "=== Шаг 5: Поиск новых файлов для парсера ==="
-# Собираем словари, которых еще нет в папке clean
+echo "=== Шаг 4: Поиск файлов для парсера ==="
 FILES_TO_PROCESS=()
 
-for dict_file in *.dict; do
-    if [ -f "$dict_file" ]; then
-        base="${dict_file%.dict}"
-        # Проверяем, есть ли уже готовый чистый файл в папке clean/
+#Каждая база обязана иметь либо .idx (StarDict), либо .mdx (MDict)
+
+for file in *.idx .mdx; do
+    if [ -f "$file" ]; then
+        base="${file%.}"
         if [ ! -f "clean/${base}_clean.dict" ]; then
             FILES_TO_PROCESS+=("$base")
         fi
@@ -87,11 +62,11 @@ if [ ${#FILES_TO_PROCESS[@]} -eq 0 ]; then
     exit 0
 fi
 
-echo "🚀 Найдены новые словари для обработки: ${FILES_TO_PROCESS[*]}"
+echo "🚀 Найдены базы для обработки: ${FILES_TO_PROCESS[*]}"
 
 if [ -f "$CONVERTER_SCRIPT" ]; then
-    # Запускаем парсер и передаем ему список базовых имен файлов
-    python3 "$CONVERTER_SCRIPT" "${FILES_TO_PROCESS[@]}"
+    # Передаем массив имен в Python
+    ipy python "$CONVERTER_SCRIPT" "${FILES_TO_PROCESS[@]}"
 else
     echo "❌ Ошибка: Файл $CONVERTER_SCRIPT не найден!"
 fi

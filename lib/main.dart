@@ -14,7 +14,6 @@ void main() {
   runApp(const OfflineDictApp());
 }
 
-// Изолированная задача для быстрого копирования байтов файлов
 Future<void> _writeTask(Map<String, dynamic> args) async {
   final String filePath = args['path'];
   final Uint8List bytes = args['bytes'];
@@ -22,14 +21,18 @@ Future<void> _writeTask(Map<String, dynamic> args) async {
   await file.writeAsBytes(bytes, flush: true);
 }
 
-// === СТРУКТУРА ДЛЯ ХРАНЕНИЯ СЛОВАРЯ И ЕГО ИМЕНИ ===
 class DictInstance {
   final String name;
   final DictionaryEngine engine;
-  DictInstance({required this.name, required this.engine});
+  final bool isTranslationDict;
+
+  DictInstance({
+    required this.name,
+    required this.engine,
+    this.isTranslationDict = false,
+  });
 }
 
-// === СЕРВИС ПЕРЕВОДА (Гибридный) ===
 class TranslationService {
   final OnDeviceTranslator _onDeviceTranslator = OnDeviceTranslator(
     sourceLanguage: TranslateLanguage.english,
@@ -39,7 +42,6 @@ class TranslationService {
   Future<Map<String, String>> translate(String text) async {
     bool isOnline = false;
 
-    // 1. Проверяем наличие интернета
     try {
       final result = await InternetAddress.lookup(
         'google.com',
@@ -49,7 +51,6 @@ class TranslationService {
       isOnline = false;
     }
 
-    // 2. Если онлайн - пробуем Google Translate API
     if (isOnline) {
       try {
         final translator = GoogleTranslator();
@@ -64,7 +65,6 @@ class TranslationService {
       }
     }
 
-    // 3. Фолбэк на локальный ML Kit
     try {
       final offlineTranslation = await _onDeviceTranslator.translateText(text);
       return {'text': offlineTranslation, 'source': 'Оффлайн (ML Kit)'};
@@ -120,7 +120,16 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
   final ScrollController _scrollController = ScrollController();
   final TranslationService _translationService = TranslationService();
 
-  List<Map<String, dynamic>> _processedBlocks = [];
+  final List<String> _translationDictKeywords = [
+    'muller',
+    'mueller',
+    'macmillan',
+    'ru',
+  ];
+
+  List<Map<String, dynamic>> _englishBlocks = [];
+  List<Map<String, dynamic>> _translationBlocks = [];
+
   String _translatedQueryText = "";
 
   bool _hasSearched = false;
@@ -128,10 +137,10 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
 
   bool _isTranslated = false;
   bool _isTranslating = false;
+  bool _isDeepSearchMode = false;
+
   String _lastTranslatedQuery = "";
   String _translationSource = "";
-
-  bool _isDeepSearchMode = false; // <-- Добавили режим глубокого поиска
 
   int _loadedCount = 0;
   String _currentQuery = "";
@@ -148,7 +157,6 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
     super.dispose();
   }
 
-  // Утилита для создания красивого имени из названия файла
   String _formatDictName(String rawName) {
     return rawName.replaceAll('_clean', '').replaceAll('_', ' ').toUpperCase();
   }
@@ -202,8 +210,18 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
             File(localDictPath).existsSync()) {
           final engine = DictionaryEngine();
           if (await engine.load(localIdxPath, localDictPath)) {
+            // Определяем, является ли этот словарь русским/переводным по массиву
+            final lowerName = baseName.toLowerCase();
+            final isTranslationDict = _translationDictKeywords.any(
+              (keyword) => lowerName.contains(keyword),
+            );
+
             _engines.add(
-              DictInstance(name: _formatDictName(baseName), engine: engine),
+              DictInstance(
+                name: _formatDictName(baseName),
+                engine: engine,
+                isTranslationDict: isTranslationDict,
+              ),
             );
             count++;
           }
@@ -235,16 +253,21 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
     final isComplexSearch = queryWords.length > 1;
     final fullPhrase = query.toLowerCase();
 
-    List<Map<String, dynamic>> combinedResults = [];
-    Set<String> seenTexts = {};
+    List<Map<String, dynamic>> englishResults = [];
+    List<Map<String, dynamic>> translationResults = [];
 
     for (var dict in _engines) {
-      final startIndex = combinedResults.length;
+      // Выбираем, в какой список попадут результаты этого словаря
+      final targetList = dict.isTranslationDict
+          ? translationResults
+          : englishResults;
+      final startIndex = targetList.length;
+
       bool hasTitle = false;
       final engine = dict.engine;
       final dictName = dict.name;
+      Set<String> seenTexts = {};
 
-      // Вспомогательная функция для чистой фильтрации и добавления блоков
       void addBlocks(String jsonStr, bool filterByPhrase) {
         if (jsonStr.isEmpty) return;
         try {
@@ -257,35 +280,32 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
             final type = block['t'] as String;
             final text = block['v'] as String;
 
-            if (text.toLowerCase().contains('.wav') || text.trim().isEmpty)
+            if (text.toLowerCase().contains('.wav') ||
+                text.toLowerCase().contains('.jpg') ||
+                text.trim().isEmpty) {
               continue;
+            }
 
             if (!filterByPhrase) {
-              // Прямое добавление всей статьи (Точный поиск)
               if (!seenTexts.contains('${type}_$text')) {
                 seenTexts.add('${type}_$text');
                 if (!hasTitle) {
-                  combinedResults.add({"t": "dict_title", "v": dictName});
+                  targetList.add({"t": "dict_title", "v": dictName});
                   hasTitle = true;
                 }
-                combinedResults.add({"t": type, "v": text});
+                targetList.add({"t": type, "v": text});
               }
             } else {
-              // Фильтрация: берем только те примеры, где упоминается фраза (Глубокий поиск)
               if (type == 'h') {
                 inMatchingSection = text.toLowerCase().contains(fullPhrase);
                 if (inMatchingSection) {
                   if (!seenTexts.contains('${type}_$text')) {
                     seenTexts.add('${type}_$text');
                     if (!hasTitle) {
-                      combinedResults.add({"t": "dict_title", "v": dictName});
+                      targetList.add({"t": "dict_title", "v": dictName});
                       hasTitle = true;
                     }
-                    combinedResults.add({
-                      "t": type,
-                      "v": text,
-                      "highlight": query,
-                    });
+                    targetList.add({"t": type, "v": text, "highlight": query});
                   }
                 }
               } else {
@@ -294,14 +314,10 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                   if (!seenTexts.contains('${type}_$text')) {
                     seenTexts.add('${type}_$text');
                     if (!hasTitle) {
-                      combinedResults.add({"t": "dict_title", "v": dictName});
+                      targetList.add({"t": "dict_title", "v": dictName});
                       hasTitle = true;
                     }
-                    combinedResults.add({
-                      "t": type,
-                      "v": text,
-                      "highlight": query,
-                    });
+                    targetList.add({"t": type, "v": text, "highlight": query});
                   }
                 }
               }
@@ -313,39 +329,27 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
       }
 
       if (!isComplexSearch) {
-        // Одиночное слово - всегда точный поиск
         addBlocks(engine.translate(fullPhrase), false);
       } else {
-        // Комплексная фраза
         if (!_isDeepSearchMode) {
-          // ОБЫЧНЫЙ ПОИСК: Ищем только статью, которая полностью совпадает с фразой
           addBlocks(engine.translate(fullPhrase), false);
         } else {
-          // ГЛУБОКИЙ ПОИСК: Ищем точную статью + сканируем огромную статью первого слова
           addBlocks(engine.translate(fullPhrase), false);
           addBlocks(engine.translate(firstWord), true);
         }
       }
 
-      // 3. ПРОВЕРКА НА ПУСТОТУ (если после обработки словаря в нем остались только заголовки)
-      if (combinedResults.length > startIndex) {
+      if (targetList.length > startIndex) {
         bool hasMeaningfulContent = false;
-        // Проверяем все добавленные элементы текущего словаря
-        for (int i = startIndex; i < combinedResults.length; i++) {
-          final t = combinedResults[i]['t'];
-          // Считаем контентом всё, что НЕ является разделителем словаря или голым заголовком слова
+        for (int i = startIndex; i < targetList.length; i++) {
+          final t = targetList[i]['t'];
           if (t != 'dict_title' && t != 'h') {
             hasMeaningfulContent = true;
             break;
           }
         }
-
-        // Если словарик подкинул только заголовки (пустые якоря) - пишем, что толкования нет
         if (!hasMeaningfulContent) {
-          combinedResults.add({
-            "t": "empty_state",
-            "v": "Толкование отсутствует",
-          });
+          targetList.add({"t": "empty_state", "v": "Толкование отсутствует"});
         }
       }
     }
@@ -353,7 +357,8 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
     setState(() {
       _hasSearched = true;
       _currentQuery = query;
-      _processedBlocks = combinedResults;
+      _englishBlocks = englishResults;
+      _translationBlocks = translationResults;
     });
 
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
@@ -482,9 +487,9 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
         baseStyle = TextStyle(
           fontSize: 16,
           fontStyle: FontStyle.italic,
-          color: isDark ? Colors.white38 : Colors.black38,
+          color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
         );
-        padding = const EdgeInsets.only(bottom: 16.0);
+        padding = const EdgeInsets.only(left: 16.0, bottom: 16.0, top: 8.0);
         break;
 
       case 'def':
@@ -547,11 +552,13 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
+    final blocksToRender = _isTranslated ? _translationBlocks : _englishBlocks;
+
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
         title: const Text(
-          'Dictionary Agregator',
+          'Оффлайн Словари',
           style: TextStyle(fontWeight: FontWeight.w600),
         ),
         centerTitle: true,
@@ -605,7 +612,6 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                               ),
                             )
                           else if (_hasSearched) ...[
-                            // Кнопка глубокого поиска (появляется ТОЛЬКО если ищем фразу)
                             if (_currentQuery.trim().contains(' '))
                               IconButton(
                                 icon: Icon(
@@ -626,7 +632,6 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                                   });
                                 },
                               ),
-                            // Кнопка перевода
                             IconButton(
                               icon: Icon(
                                 Icons.g_translate,
@@ -651,8 +656,9 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                                   _hasSearched = false;
                                   _isTranslated = false;
                                   _translatedQueryText = "";
-                                  _isDeepSearchMode =
-                                      false; // Сбрасываем глубокий поиск
+                                  _isDeepSearchMode = false;
+                                  _englishBlocks.clear();
+                                  _translationBlocks.clear();
                                 });
                               },
                             ),
@@ -672,21 +678,25 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                               _buildTranslationCard(theme, isDark),
 
                             Expanded(
-                              child: _processedBlocks.isEmpty
+                              child: blocksToRender.isEmpty
                                   ? Center(
                                       child: SingleChildScrollView(
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
                                             Icon(
-                                              Icons.search_off,
+                                              _isTranslated
+                                                  ? Icons.menu_book_rounded
+                                                  : Icons.search_off,
                                               size: 64,
-                                              color: theme.colorScheme.error
-                                                  .withValues(alpha: 0.5),
+                                              color: theme.colorScheme.onSurface
+                                                  .withValues(alpha: 0.2),
                                             ),
                                             const SizedBox(height: 16),
                                             Text(
-                                              'Фраза «$_currentQuery» не найдена',
+                                              _isTranslated
+                                                  ? 'В оффлайн-словарях перевода нет'
+                                                  : 'Фраза «$_currentQuery» не найдена',
                                               style: const TextStyle(
                                                 fontSize: 18,
                                                 fontWeight: FontWeight.bold,
@@ -703,10 +713,10 @@ class _DictionaryScreenState extends State<DictionaryScreen> {
                                         horizontal: 16,
                                         vertical: 8,
                                       ),
-                                      itemCount: _processedBlocks.length,
+                                      itemCount: blocksToRender.length,
                                       itemBuilder: (ctx, i) =>
                                           _buildBlockWidget(
-                                            _processedBlocks[i],
+                                            blocksToRender[i],
                                             theme,
                                             isDark,
                                           ),
